@@ -20,7 +20,7 @@ contract KinkIRM is IIrm {
         SLOPE_2 = slope2;
     }
     
-    function borrowRate(MarketParams memory marketParams, Market memory market) 
+    function borrowRate(MarketParams memory, Market memory market) 
         external 
         view 
         returns (uint256) 
@@ -28,7 +28,7 @@ contract KinkIRM is IIrm {
         return _calculateRate(market);
     }
     
-    function borrowRateView(MarketParams memory marketParams, Market memory market) 
+    function borrowRateView(MarketParams memory, Market memory market) 
         external 
         view 
         returns (uint256) 

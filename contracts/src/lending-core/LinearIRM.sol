@@ -16,7 +16,7 @@ contract LinearIRM is IIrm {
         SLOPE = slope;
     }
     
-    function borrowRate(MarketParams memory marketParams, Market memory market) 
+    function borrowRate(MarketParams memory, Market memory market) 
         external 
         view 
         returns (uint256) 
@@ -24,7 +24,7 @@ contract LinearIRM is IIrm {
         return _calculateRate(market);
     }
     
-    function borrowRateView(MarketParams memory marketParams, Market memory market) 
+    function borrowRateView(MarketParams memory, Market memory market) 
         external 
         view 
         returns (uint256) 

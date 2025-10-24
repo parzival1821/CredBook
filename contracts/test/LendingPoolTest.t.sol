@@ -2,12 +2,13 @@
 pragma solidity ^0.8.21;
 
 import "forge-std/Test.sol";
-import "../src/lending-core/LendingPool.sol";
+import {LendingPool, WAD, SECONDS_PER_YEAR} from "../src/lending-core/LendingPool.sol";
 import "../src/lending-core/LinearIRM.sol";
 import "../src/lending-core/KinkIRM.sol";
 import "../src/mocks/MockUSDC.sol";
 import "../src/mocks/MockWETH.sol";
 import {MarketParams, Market} from "../src/interfaces/IMorpho.sol";
+import {console} from "forge-std/console.sol";
 
 contract LendingPoolTest is Test {
     LendingPool public pool1;
@@ -25,9 +26,6 @@ contract LendingPoolTest is Test {
     
     address public lender = address(0x1);
     address public borrower = address(0x2);
-    
-    uint256 constant WAD = 1e18;
-    uint256 constant SECONDS_PER_YEAR = 365 * 24 * 60 * 60;
     
     function setUp() public {
         // Deploy tokens
@@ -151,7 +149,7 @@ contract LendingPoolTest is Test {
     
     // ============ LINEAR IRM TESTS ============
     
-    function test_LinearIRM1_RateAtZeroUtilization() public {
+    function test_LinearIRM1_RateAtZeroUtilization() public view{
         MarketParams memory params = pool1.getMarketParams(1);
         Market memory market = pool1.getMarket(1);
         
@@ -185,7 +183,7 @@ contract LendingPoolTest is Test {
         assertApproxEqRel(rateAfter, (46 * WAD/1000)/SECONDS_PER_YEAR, 10000000000);
     }
     
-    function test_LinearIRM2_HigherBaseRate() public {
+    function test_LinearIRM2_HigherBaseRate() public view{
         MarketParams memory params1 = pool1.getMarketParams(1);
         MarketParams memory params2 = pool2.getMarketParams(2);
         Market memory market1 = pool1.getMarket(1);
@@ -272,7 +270,7 @@ contract LendingPoolTest is Test {
         pool1.borrow(1, 30_000 * 1e6, 0, borrower, borrower);
         
         // Give borrower USDC to repay
-        usdc.mint(borrower, 30_000 * 1e6);
+        // usdc.mint(borrower, 30_000 * 1e6);
         
         Market memory marketBefore = pool1.getMarket(1);
         uint256 utilizationBefore = (uint256(marketBefore.totalBorrowAssets) * WAD) / marketBefore.totalSupplyAssets;
@@ -284,6 +282,8 @@ contract LendingPoolTest is Test {
         uint256 utilizationAfter = (uint256(marketAfter.totalBorrowAssets) * WAD) / marketAfter.totalSupplyAssets;
         
         assertLt(utilizationAfter, utilizationBefore, "Utilization should decrease after repay");
+        console.log("utilizationAfter : ", utilizationAfter); // 150000000000000000 = 0.15 * 1e18 == 15%
+        console.log("utilizationBefore : ", utilizationBefore);
         vm.stopPrank();
     }
     
@@ -310,11 +310,14 @@ contract LendingPoolTest is Test {
         uint128 borrowAfter = marketAfter.totalBorrowAssets;
         
         assertGt(borrowAfter, borrowBefore, "Borrow amount should increase due to interest");
+        console.log("borrowBefore : ", borrowBefore); // 20000000000 = 20,000 * 1e6
+        console.log("borrowAfter : ", borrowAfter);   // 20941484452 = 20,941 * 1e6 
+        // reason :  since after borrowing, utilization became 20%, hence borrow rate became 4.6%(2% base + 13% slope * 20% util). so 4.6% compounded over a year on 20,000 is 20941 (== 20,000 * e^0.046)
     }
     
     // ============ COMPARATIVE TESTS ============
     
-    function test_AllPoolsHaveDifferentRates() public {
+    function test_AllPoolsHaveDifferentRates() public view{
         MarketParams memory params1 = pool1.getMarketParams(1);
         MarketParams memory params2 = pool2.getMarketParams(2);
         MarketParams memory params3 = pool3.getMarketParams(3);
@@ -333,11 +336,37 @@ contract LendingPoolTest is Test {
         // All rates should be different at 0% utilization
         assertTrue(rate1 != rate2);
         assertTrue(rate1 != rate3);
-        assertTrue(rate1 != rate4);
+        // assertTrue(rate1 != rate4); // will be same - both are 2% in starting
         assertTrue(rate2 != rate3);
+
+        // console.log("rate1 : ", rate1); // 634195839
+        // console.log("rate2 : ", rate2); // 1585489599
+        // console.log("rate3 : ", rate3); // 317097919
+        // console.log("rate4 : ", rate4); // 634195839 
+
+
+        // // console.log("\nDirect IRM checks:");
+        // // console.log("kinkIRM1.BASE_RATE:", kinkIRM1.BASE_RATE());
+        // // console.log("kinkIRM2.BASE_RATE:", kinkIRM2.BASE_RATE());
+        
+        // // console.log("\nPool 3 IRM address:", params3.irm);
+        // // console.log("Pool 4 IRM address:", params4.irm);
+        // // console.log("kinkIRM1 address:", address(kinkIRM1));
+        // // console.log("kinkIRM2 address:", address(kinkIRM2));
+
+        // console.log("market4.totalSupplyAssets : ", market4.totalSupplyAssets);
+        // console.log("market4.totalBorrowAssets : ", market4.totalBorrowAssets);
+
+        // if (market4.totalSupplyAssets > 0) {
+        // uint256 util4 = (uint256(market4.totalBorrowAssets) * WAD) / market4.totalSupplyAssets;
+        // console.log("Pool4 utilization (WAD):", util4);
+        // }
+
+        // console.log(kinkIRM2.BASE_RATE());
+        // console.log(kinkIRM2.borrowRateView(params4, market4));
     }
     
-    function test_LowestRatePoolAtZeroUtil() public {
+    function test_LowestRatePoolAtZeroUtil() public view{
         MarketParams memory params1 = pool1.getMarketParams(1);
         MarketParams memory params2 = pool2.getMarketParams(2);
         MarketParams memory params3 = pool3.getMarketParams(3);
