@@ -161,6 +161,14 @@ contract Orderbook {
     
     // ============ MATCHING ENGINE ============
     
+    struct PoolBorrow {
+        address pool;
+        uint256 poolId;
+        uint256 totalAmount;
+        uint256 totalCollateral;
+    }
+
+
     /// @notice Match a borrow order with the best available liquidity
     function matchBorrowOrder(
         address borrower,
@@ -170,7 +178,6 @@ contract Orderbook {
     ) external {
         require(amount > 0, "Amount must be > 0");
         
-        // Refresh orderbook to get latest rates
         refreshOrderbook();
         
         uint256 remainingAmount = amount;
@@ -179,30 +186,61 @@ contract Orderbook {
         // Transfer collateral from borrower
         IERC20(WETH).transferFrom(borrower, address(this), collateralAmount);
         
-        // Match orders
+        // Track borrows per unique pool
+        
+        PoolBorrow[] memory poolBorrows = new PoolBorrow[](registeredPools.length);
+        uint256 uniquePoolCount = 0;
+        
+        // First pass: aggregate orders by pool 
         while (remainingAmount > 0 && currentOrderIndex < orders.length) {
-            console.log("Borrow initiated for index : ", currentOrderIndex);
             Order memory order = orders[currentOrderIndex];
             
-            // Check if rate is acceptable
             require(order.rate <= maxRate, "No orders within max rate");
             
             uint256 fillAmount = remainingAmount > order.amount ? order.amount : remainingAmount;
-            uint256 collatForThisOrder = (fillAmount * collateralAmount)/amount;
+            uint256 collatForThisOrder = (fillAmount * collateralAmount) / amount;
             
-            // Execute borrow on the pool
-            _executeBorrow(order.pool, order.poolId, fillAmount, collatForThisOrder, borrower);
+            // Find or create pool entry
+            bool found = false;
+            for (uint256 i = 0; i < uniquePoolCount; i++) {
+                if (poolBorrows[i].pool == order.pool) {
+                    poolBorrows[i].totalAmount += fillAmount;
+                    poolBorrows[i].totalCollateral += collatForThisOrder;
+                    found = true;
+                    break;
+                }
+            }
+            
+            if (!found) {
+                poolBorrows[uniquePoolCount] = PoolBorrow({
+                    pool: order.pool,
+                    poolId: order.poolId,
+                    totalAmount: fillAmount,
+                    totalCollateral: collatForThisOrder
+                });
+                uniquePoolCount++;
+            }
             
             emit OrderMatched(borrower, order.pool, fillAmount, order.rate);
             
             remainingAmount -= fillAmount;
-            console.log("Borrow executed for index : ", currentOrderIndex);
             currentOrderIndex++;
         }
         
+        console.log("Remaining amount : ", remainingAmount); // 100000000000 = 100_000 * 1e6
         require(remainingAmount == 0, "Could not fill entire order");
         
-        // Refresh orderbook after matching
+        // Second pass: execute one borrow per pool
+        for (uint256 i = 0; i < uniquePoolCount; i++) {
+            _executeBorrow(
+                poolBorrows[i].pool,
+                poolBorrows[i].poolId,
+                poolBorrows[i].totalAmount,
+                poolBorrows[i].totalCollateral,
+                borrower
+            );
+        }
+        
         refreshOrderbook();
     }
     

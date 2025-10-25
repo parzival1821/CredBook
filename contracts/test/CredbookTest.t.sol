@@ -271,7 +271,7 @@ contract CredbookTest is Test {
         // Give borrower USDC to repay
         usdc.mint(borrower1, borrowAmount);
         
-        // Repay
+        // Repay (no interest accrued in such a short time)
         usdc.approve(address(orderbook), borrowAmount);
         credbook.repay(borrowAmount);
         vm.stopPrank();
@@ -295,7 +295,7 @@ contract CredbookTest is Test {
         // Partial repay
         uint256 repayAmount = 3_000 * 1e6;
         usdc.mint(borrower1, repayAmount);
-        usdc.approve(address(credbook), repayAmount);
+        usdc.approve(address(orderbook), repayAmount);
         credbook.repay(repayAmount);
         vm.stopPrank();
         
@@ -315,7 +315,7 @@ contract CredbookTest is Test {
         
         // Full repay
         usdc.mint(borrower1, borrowAmount);
-        usdc.approve(address(credbook), borrowAmount);
+        usdc.approve(address(orderbook), borrowAmount);
         credbook.repay(borrowAmount);
         vm.stopPrank();
         
@@ -391,10 +391,352 @@ contract CredbookTest is Test {
     function test_CannotRepayWithoutBorrowing() public {
         vm.startPrank(borrower1);
         usdc.mint(borrower1, 1_000 * 1e6);
-        usdc.approve(address(credbook), 1_000 * 1e6);
+        usdc.approve(address(orderbook), 1_000 * 1e6);
         
         vm.expectRevert("No active borrows");
         credbook.repay(1_000 * 1e6);
         vm.stopPrank();
+    }
+
+
+    // ============ INTEREST ACCRUAL TESTS ============
+
+    // ✅
+    function test_InterestAccruesOverTime() public {
+        uint256 borrowAmount = 10_000 * 1e6;
+        uint256 collateralAmount = 5 * 1e18;
+        
+        // Borrow
+        vm.startPrank(borrower1);
+        weth.approve(address(orderbook), collateralAmount);
+        credbook.borrow(borrowAmount, collateralAmount, type(uint256).max);
+        vm.stopPrank();
+        
+        // Get the positions to know which pools were used
+        Orderbook.BorrowPosition[] memory positions = orderbook.getBorrowerPositions(borrower1);
+        require(positions.length > 0, "Should have borrow positions");
+        
+        // Track total borrow across all positions
+        uint256 totalBorrowBefore = 0;
+        for (uint256 i = 0; i < positions.length; i++) {
+            LendingPool pool = LendingPool(positions[i].pool);
+            (,, uint128 totalBorrow,,,) = pool.market(positions[i].poolId);
+            totalBorrowBefore += totalBorrow;
+        }
+        
+        console.log("Total borrow before time warp:", totalBorrowBefore); // 38000000000
+        
+        // Advance time by 1 year
+        vm.warp(block.timestamp + 365 days);
+        
+        // Accrue interest on all pools that were used
+        uint256 totalBorrowAfter = 0;
+        for (uint256 i = 0; i < positions.length; i++) {
+            LendingPool pool = LendingPool(positions[i].pool);
+            pool.accrueInterest(positions[i].poolId);
+            
+            (,, uint128 totalBorrow,,,) = pool.market(positions[i].poolId);
+            totalBorrowAfter += totalBorrow;
+        }
+        
+        console.log("Total borrow after 1 year:", totalBorrowAfter);            // 38697587846
+        console.log("Interest accrued:", totalBorrowAfter - totalBorrowBefore); // 697587846 => effective 1.83% of initial amount
+        
+        assertGt(totalBorrowAfter, totalBorrowBefore, "Interest should accrue");
+        
+        // Check that interest is roughly in expected range (should be > 1% of principal)
+        uint256 minExpectedInterest = borrowAmount / 100; // At least 1%
+        assertTrue(totalBorrowAfter - totalBorrowBefore > minExpectedInterest);
+    }
+
+    function test_InterestAccrualAffectsRepaymentAmount() public {
+        uint256 borrowAmount = 10_000 * 1e6;
+        uint256 collateralAmount = 5 * 1e18;
+        
+        // Borrow
+        vm.startPrank(borrower1);
+        weth.approve(address(orderbook), collateralAmount);
+        credbook.borrow(borrowAmount, collateralAmount, type(uint256).max);
+        
+        uint256 borrowedAmount = orderbook.getTotalBorrowed(borrower1);
+        console.log("Initially borrowed (tracked):", borrowedAmount); // 10000000000 = 10_000 * 1e6
+        
+        // Get actual debt from pools
+        Orderbook.BorrowPosition[] memory positions = orderbook.getBorrowerPositions(borrower1);
+        uint256 actualDebtBefore = 0;
+        for (uint256 i = 0; i < positions.length; i++) {
+            LendingPool pool = LendingPool(positions[i].pool);
+            uint256 borrowShares = pool.borrowShares(positions[i].poolId, borrower1);
+            (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = pool.market(positions[i].poolId);
+            
+            // Calculate actual debt from shares
+            uint256 positionDebt = (borrowShares * totalBorrowAssets) / totalBorrowShares;
+            actualDebtBefore += positionDebt;
+        }
+        
+        console.log("Actual debt before time:", actualDebtBefore); // 10000000000 = 10_000 * 1e6  
+        
+        // Advance time by 6 months
+        vm.warp(block.timestamp + 182 days);
+        
+        // Accrue interest on all used pools
+        for (uint256 i = 0; i < positions.length; i++) {
+            LendingPool pool = LendingPool(positions[i].pool);
+            pool.accrueInterest(positions[i].poolId);
+        }
+        
+        // Calculate actual debt after accrual
+        uint256 actualDebtAfter = 0;
+        for (uint256 i = 0; i < positions.length; i++) {
+            LendingPool pool = LendingPool(positions[i].pool);
+            uint256 borrowShares = pool.borrowShares(positions[i].poolId, borrower1);
+            (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = pool.market(positions[i].poolId);
+            
+            uint256 positionDebt = (borrowShares * totalBorrowAssets) / totalBorrowShares;
+            actualDebtAfter += positionDebt;
+        }
+        
+        console.log("Actual debt after 6 months:", actualDebtAfter);
+        
+        vm.stopPrank();
+        
+        // Actual debt should be higher than initial borrow
+        assertGt(actualDebtAfter, borrowAmount, "Debt should increase with interest");
+    }
+
+    function test_MultipleAccrualsCompoundInterest() public {
+        uint256 borrowAmount = 5_000 * 1e6;
+        uint256 collateralAmount = 3 * 1e18;
+        
+        // Borrow
+        vm.startPrank(borrower1);
+        weth.approve(address(orderbook), collateralAmount);
+        credbook.borrow(borrowAmount, collateralAmount, type(uint256).max);
+        vm.stopPrank();
+        
+        // Get positions
+        Orderbook.BorrowPosition[] memory positions = orderbook.getBorrowerPositions(borrower1);
+        
+        // Track debt over time
+        uint256[] memory debtSnapshots = new uint256[](4);
+        
+        // Initial debt 
+        for (uint256 i = 0; i < positions.length; i++) {
+            LendingPool pool = LendingPool(positions[i].pool);
+            (,, uint128 totalBorrow,,,) = pool.market(positions[i].poolId);
+            debtSnapshots[0] += totalBorrow;
+        }
+        console.log("Initial debt:", debtSnapshots[0]);
+        
+        // Accrue 3 times over 1 year
+        for (uint256 period = 0; period < 3; period++) {
+            vm.warp(block.timestamp + 121 days); // ~4 months each
+            
+            uint256 currentDebt = 0;
+            for (uint256 i = 0; i < positions.length; i++) {
+                LendingPool pool = LendingPool(positions[i].pool);
+                pool.accrueInterest(positions[i].poolId);
+                
+                (,, uint128 totalBorrow,,,) = pool.market(positions[i].poolId);
+                currentDebt += totalBorrow;
+            }
+            
+            debtSnapshots[period + 1] = currentDebt;
+            console.log("After period", period + 1, "debt:", currentDebt);
+        }
+        
+        // Each period should have more debt than the last (compounding)
+        assertGt(debtSnapshots[1], debtSnapshots[0]);
+        assertGt(debtSnapshots[2], debtSnapshots[1]);
+        assertGt(debtSnapshots[3], debtSnapshots[2]);
+    }
+
+    // ============ ORDERBOOK REFRESH & DYNAMICS TESTS ============
+
+    function test_OrderbookRefreshShowsDifferentRates() public {
+        credbook.refreshOrderbook();
+        
+        Orderbook.Order[] memory ordersBefore = orderbook.getAllOrders();
+        uint256 firstRateBefore = ordersBefore[0].rate;
+        
+        console.log("Best rate before borrow:", firstRateBefore);
+        console.log("Total orders before:", ordersBefore.length);
+        
+        // Borrow to change utilization
+        vm.startPrank(borrower1);
+        weth.approve(address(orderbook), 10 * 1e18);
+        credbook.borrow(20_000 * 1e6, 10 * 1e18, type(uint256).max);
+        vm.stopPrank();
+        
+        // Orderbook should have refreshed automatically
+        Orderbook.Order[] memory ordersAfter = orderbook.getAllOrders();
+        
+        console.log("Total orders after:", ordersAfter.length);
+        
+        if (ordersAfter.length > 0) {
+            uint256 firstRateAfter = ordersAfter[0].rate;
+            console.log("Best rate after borrow:", firstRateAfter);
+            
+            if (firstRateBefore > 0) {
+                console.log("Rate increase:", firstRateAfter - firstRateBefore);
+            }
+            
+            // Rates should be higher due to increased utilization
+            assertGt(firstRateAfter, firstRateBefore, "Rates should increase with utilization");
+        }
+    }
+
+    function test_OrderbookShowsUtilizationChanges() public {
+        credbook.refreshOrderbook();
+        
+        Orderbook.Order[] memory ordersBefore = orderbook.getAllOrders();
+        
+        console.log("=== Before Borrow (first 5 orders) ===");
+        for (uint256 i = 0; i < 5 && i < ordersBefore.length; i++) {
+            // console.log("Order", i, "- Rate:", ordersBefore[i].rate, "Util:", ordersBefore[i].utilization);
+            console.log("Order number : ", i);
+            console.log("Rate : ", ordersBefore[i].rate);
+            console.log("Utilization : ", ordersBefore[i].utilization);
+        }
+        
+        // note that loanAmount cannot be greater than 20k since at once only 20 quotes are present
+        uint256 collatAmount = 5 * 1e18;
+        uint256 loanAmount = 12_000 * 1e6;
+        vm.startPrank(borrower1);
+        weth.approve(address(orderbook), collatAmount);
+        credbook.borrow(loanAmount, collatAmount, type(uint256).max);
+        vm.stopPrank();
+        
+        Orderbook.Order[] memory ordersAfter = orderbook.getAllOrders();
+        
+        console.log("\n=== After Borrow (first 5 orders) ===");
+        for (uint256 i = 0; i < 5 && i < ordersAfter.length; i++) {
+            // console.log("Order", i, "- Rate:", ordersAfter[i].rate, "Util:", ordersAfter[i].utilization);
+            console.log("Order number : ", i);
+            console.log("Rate : ", ordersAfter[i].rate);
+            console.log("Utilization : ", ordersAfter[i].utilization);
+        }
+        
+        // At least some orders should show higher utilization
+        if (ordersAfter.length > 0 && ordersBefore.length > 0) {
+            // Average utilization should be higher
+            uint256 avgUtilBefore = 0;
+            uint256 avgUtilAfter = 0;
+            
+            uint256 checkCount = 5;
+            if (ordersBefore.length < checkCount) checkCount = ordersBefore.length;
+            
+            for (uint256 i = 0; i < checkCount; i++) {
+                avgUtilBefore += ordersBefore[i].utilization;
+                avgUtilAfter += ordersAfter[i].utilization;
+            }
+            
+            assertGt(avgUtilAfter, avgUtilBefore, "Average utilization should increase");
+        }
+    }
+
+    function test_RepayRestoresOrderbookLiquidity() public {
+        // First, borrow heavily
+        vm.startPrank(borrower1);
+        weth.approve(address(orderbook), 100 * 1e18);
+        credbook.borrow(100_000 * 1e6, 100 * 1e18, type(uint256).max);
+        vm.stopPrank();
+        
+        credbook.refreshOrderbook();
+        uint256 orderCountAfterBorrow = orderbook.getOrderbookSize();
+        
+        console.log("Orders after borrow:", orderCountAfterBorrow);
+        
+        // Repay
+        vm.startPrank(borrower1);
+        usdc.mint(borrower1, 100_000 * 1e6);
+        usdc.approve(address(orderbook), 100_000 * 1e6);
+        credbook.repay(100_000 * 1e6);
+        vm.stopPrank();
+        
+        uint256 orderCountAfterRepay = orderbook.getOrderbookSize();
+        
+        console.log("Orders after repay:", orderCountAfterRepay);
+        
+        // Should have more orders available again
+        assertGe(orderCountAfterRepay, orderCountAfterBorrow, "Liquidity should be restored");
+    }
+
+    function test_DifferentPoolsQuoteDifferentRates() public {
+        credbook.refreshOrderbook();
+        
+        Orderbook.Order[] memory orders = orderbook.getAllOrders();
+        
+        console.log("=== Rates by Pool ===");
+        for (uint256 i = 0; i < orders.length && i < 10; i++) {
+            // console.log("Order", i, "- Pool:", orders[i].pool, "Rate:", orders[i].rate);
+            console.log("Order number : ", i);
+            console.log("Rate : ", orders[i].rate);
+            console.log("Utilization : ", orders[i].utilization);
+        }
+        
+        // Check that we have orders from multiple pools
+        address firstPool = orders[0].pool;
+        bool foundDifferentPool = false;
+        
+        for (uint256 i = 1; i < orders.length; i++) {
+            if (orders[i].pool != firstPool) {
+                foundDifferentPool = true;
+                break;
+            }
+        }
+        
+        assertTrue(foundDifferentPool, "Should have orders from multiple pools");
+    }
+
+    function test_OrderbookSortingMaintainedAfterRefresh() public {
+        // Borrow to change utilization
+        vm.startPrank(borrower1);
+        weth.approve(address(orderbook), 10 * 1e18);
+        credbook.borrow(50_000 * 1e6, 10 * 1e18, type(uint256).max);
+        vm.stopPrank();
+        
+        credbook.refreshOrderbook();
+        
+        Orderbook.Order[] memory orders = orderbook.getAllOrders();
+        
+        // Verify sorting is maintained
+        for (uint256 i = 1; i < orders.length; i++) {
+            assertGe(orders[i].rate, orders[i-1].rate, "Orders must remain sorted after refresh");
+        }
+        
+        console.log("Verified", orders.length, "orders are properly sorted");
+    }
+
+    function test_SimulatedUtilizationInOrdersIsAccurate() public {
+        credbook.refreshOrderbook();
+        
+        Orderbook.Order[] memory orders = orderbook.getAllOrders();
+        
+        // Group orders by pool and check utilization progression
+        console.log("=== Simulated utilization by pool ===");
+        
+        address currentPool = orders[0].pool;
+        uint256 orderCountForPool = 0;
+        uint256 firstUtilForPool = orders[0].utilization;
+        
+        for (uint256 i = 0; i < orders.length; i++) {
+            if (orders[i].pool == currentPool) {
+                // console.log("Pool", currentPool, "Order", orderCountForPool, "Util:", orders[i].utilization);
+                console.log("Pool: ", currentPool);
+                console.log("Order : ", orderCountForPool);
+                console.log("Utilization : ", orders[i].utilization);
+                orderCountForPool++;
+            } else {
+                // New pool
+                currentPool = orders[i].pool;
+                orderCountForPool = 0;
+                firstUtilForPool = orders[i].utilization;
+            }
+        }
+        
+        // Just verify orders exist with valid utilization
+        assertTrue(orders.length > 0, "Should have orders");
+        assertTrue(orders[0].utilization <= WAD, "Utilization should be <= 100%");
     }
 }
