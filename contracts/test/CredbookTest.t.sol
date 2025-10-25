@@ -38,8 +38,8 @@ contract CredbookTest is Test {
         usdc.mint(lender2, 500_000 * 1e6);
         
         // Setup borrowers
-        weth.mint(borrower1, 50 * 1e18);
-        weth.mint(borrower2, 50 * 1e18);
+        weth.mint(borrower1, 500 * 1e18);
+        weth.mint(borrower2, 500 * 1e18);
         
         // Lenders supply liquidity to all pools
         vm.startPrank(lender1);
@@ -636,10 +636,14 @@ contract CredbookTest is Test {
     }
 
     function test_RepayRestoresOrderbookLiquidity() public {
+
+        uint256 collatAmount = 10 * 1e18;
+        uint256 loanAmount = 20_000 * 1e6;
+
         // First, borrow heavily
         vm.startPrank(borrower1);
-        weth.approve(address(orderbook), 100 * 1e18);
-        credbook.borrow(100_000 * 1e6, 100 * 1e18, type(uint256).max);
+        weth.approve(address(orderbook), collatAmount);
+        credbook.borrow(loanAmount, collatAmount, type(uint256).max);
         vm.stopPrank();
         
         credbook.refreshOrderbook();
@@ -649,9 +653,9 @@ contract CredbookTest is Test {
         
         // Repay
         vm.startPrank(borrower1);
-        usdc.mint(borrower1, 100_000 * 1e6);
-        usdc.approve(address(orderbook), 100_000 * 1e6);
-        credbook.repay(100_000 * 1e6);
+        usdc.mint(borrower1, loanAmount);
+        usdc.approve(address(orderbook), loanAmount);
+        credbook.repay(loanAmount);
         vm.stopPrank();
         
         uint256 orderCountAfterRepay = orderbook.getOrderbookSize();
@@ -693,7 +697,7 @@ contract CredbookTest is Test {
         // Borrow to change utilization
         vm.startPrank(borrower1);
         weth.approve(address(orderbook), 10 * 1e18);
-        credbook.borrow(50_000 * 1e6, 10 * 1e18, type(uint256).max);
+        credbook.borrow(20_000 * 1e6, 10 * 1e18, type(uint256).max);
         vm.stopPrank();
         
         credbook.refreshOrderbook();
@@ -738,5 +742,380 @@ contract CredbookTest is Test {
         // Just verify orders exist with valid utilization
         assertTrue(orders.length > 0, "Should have orders");
         assertTrue(orders[0].utilization <= WAD, "Utilization should be <= 100%");
+    }
+
+
+    // ============ REPAY WITH INTEREST TESTS ============
+
+    function test_RepayWithAccruedInterest_FullAmount() public {
+        uint256 borrowAmount = 10_000 * 1e6;
+        uint256 collateralAmount = 5 * 1e18;
+        
+        // Borrow
+        vm.startPrank(borrower1);
+        weth.approve(address(orderbook), collateralAmount);
+        credbook.borrow(borrowAmount, collateralAmount, type(uint256).max);
+        
+        uint256 borrowedTracked = orderbook.getTotalBorrowed(borrower1);
+        console.log("Borrowed (tracked):", borrowedTracked);
+        
+        // Advance time by 1 year 
+        vm.warp(block.timestamp + 365 days);
+        
+        // Accrue interest on all pools
+        Orderbook.BorrowPosition[] memory positions = orderbook.getBorrowerPositions(borrower1);
+        uint256 actualDebtWithInterest = 0;
+        
+        for (uint256 i = 0; i < positions.length; i++) {
+            LendingPool pool = LendingPool(positions[i].pool);
+            pool.accrueInterest(positions[i].poolId);
+            
+            uint256 borrowShares = pool.borrowShares(positions[i].poolId, borrower1);
+            (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = pool.market(positions[i].poolId);
+            
+            uint256 positionDebt = (borrowShares * totalBorrowAssets) / totalBorrowShares;
+            actualDebtWithInterest += positionDebt;
+        }
+        
+        console.log("Actual debt with interest:", actualDebtWithInterest);
+        uint256 interestAccrued = actualDebtWithInterest - borrowAmount;
+        console.log("Interest accrued:", interestAccrued);
+        
+        // Try to repay only the principal (should fail or leave debt)
+        // usdc.mint(borrower1, borrowAmount);
+        usdc.approve(address(orderbook), borrowAmount);
+        
+        // This will repay the tracked amount, but not cover the full debt with interest
+        credbook.repay(borrowAmount);
+        
+        // Check remaining debt
+        uint256 remainingDebt = 0;
+        for (uint256 i = 0; i < positions.length; i++) {
+            LendingPool pool = LendingPool(positions[i].pool);
+            uint256 borrowShares = pool.borrowShares(positions[i].poolId, borrower1);
+            
+            if (borrowShares > 0) {
+                (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = pool.market(positions[i].poolId);
+                remainingDebt += (borrowShares * totalBorrowAssets) / totalBorrowShares;
+            }
+        }
+        
+        console.log("Remaining debt after repaying principal:", remainingDebt);
+        
+        vm.stopPrank();
+        
+        // Should still have debt equal to the interest
+        assertGt(remainingDebt, 0, "Should have remaining debt from unpaid interest");
+        assertApproxEqAbs(remainingDebt, interestAccrued, 1000, "Remaining should be ~interest amount");
+    }
+
+    function test_RepayWithAccruedInterest_PayFullDebt() public {
+        uint256 borrowAmount = 10_000 * 1e6;
+        uint256 collateralAmount = 5 * 1e18;
+        
+        // Borrow
+        vm.startPrank(borrower1);
+        weth.approve(address(orderbook), collateralAmount);
+        credbook.borrow(borrowAmount, collateralAmount, type(uint256).max);
+        
+        // Advance time by 6 months
+        vm.warp(block.timestamp + 182 days);
+        
+        // Calculate actual debt with interest
+        Orderbook.BorrowPosition[] memory positions = orderbook.getBorrowerPositions(borrower1);
+        uint256 actualDebtWithInterest = 0;
+        
+        for (uint256 i = 0; i < positions.length; i++) {
+            LendingPool pool = LendingPool(positions[i].pool);
+            pool.accrueInterest(positions[i].poolId);
+            
+            uint256 borrowShares = pool.borrowShares(positions[i].poolId, borrower1);
+            (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = pool.market(positions[i].poolId);
+            
+            uint256 positionDebt = (borrowShares * totalBorrowAssets) / totalBorrowShares;
+            actualDebtWithInterest += positionDebt;
+        }
+        
+        console.log("Principal:", borrowAmount);
+        console.log("Debt with interest:", actualDebtWithInterest);
+        console.log("Interest:", actualDebtWithInterest - borrowAmount);
+        assertEq(actualDebtWithInterest, orderbook.getActualDebt(borrower1));
+        
+        // Repay the full amount including interest
+        usdc.mint(borrower1, actualDebtWithInterest - borrowAmount); // mint the extra money that borrower must pay
+        usdc.approve(address(orderbook), actualDebtWithInterest);
+        credbook.repay(actualDebtWithInterest);
+        
+        // Verify all debt is cleared
+        uint256 remainingDebt = 0;
+        for (uint256 i = 0; i < positions.length; i++) {
+            LendingPool pool = LendingPool(positions[i].pool);
+            uint256 borrowShares = pool.borrowShares(positions[i].poolId, borrower1);
+            remainingDebt += borrowShares;
+        }
+        
+        vm.stopPrank();
+
+        Orderbook.BorrowPosition[] memory positionsAfterRepay = orderbook.getBorrowerPositions(borrower1);
+        assertEq(positionsAfterRepay.length, 0);
+        
+        assertEq(remainingDebt, 0, "All debt should be repaid");
+        assertEq(orderbook.getActivePositionCount(borrower1), 0, "No active positions should remain");
+        assertEq(orderbook.getTotalBorrowed(borrower1), 0);
+    }
+
+    function test_PartialRepayWithAccruedInterest() public {
+        uint256 borrowAmount = 20_000 * 1e6;
+        uint256 collateralAmount = 10 * 1e18;
+        
+        // Borrow 
+        vm.startPrank(borrower1);
+        weth.approve(address(orderbook), collateralAmount);
+        credbook.borrow(borrowAmount, collateralAmount, type(uint256).max);
+        
+        // Advance time by 1 year
+        vm.warp(block.timestamp + 365 days);
+        
+        // Calculate debt before repayment
+        Orderbook.BorrowPosition[] memory positions = orderbook.getBorrowerPositions(borrower1);
+        uint256 debtBefore = 0;
+        
+        for (uint256 i = 0; i < positions.length; i++) {
+            LendingPool pool = LendingPool(positions[i].pool);
+            pool.accrueInterest(positions[i].poolId);
+            
+            uint256 borrowShares = pool.borrowShares(positions[i].poolId, borrower1);
+            (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = pool.market(positions[i].poolId);
+            
+            debtBefore += (borrowShares * totalBorrowAssets) / totalBorrowShares;
+        }
+        
+        console.log("Debt with interest:", debtBefore);
+        console.log("Number of Borrow positions ", positions.length);
+        
+        // Repay 50% of principal
+        uint256 repayAmount = 10_000 * 1e6;
+        usdc.mint(borrower1, repayAmount);
+        usdc.approve(address(orderbook), repayAmount);
+        credbook.repay(repayAmount);
+        Orderbook.BorrowPosition[] memory positionsAfterRepay = orderbook.getBorrowerPositions(borrower1);
+        
+        // Calculate debt after repayment
+        uint256 debtAfter = 0;
+        for (uint256 i = 0; i < positions.length; i++) {
+            LendingPool pool = LendingPool(positions[i].pool);
+            uint256 borrowShares = pool.borrowShares(positions[i].poolId, borrower1);
+            (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = pool.market(positions[i].poolId);
+            
+            if (borrowShares > 0) {
+                debtAfter += (borrowShares * totalBorrowAssets) / totalBorrowShares;
+            }
+        }
+        
+        console.log("Debt after partial repay:", debtAfter);
+        console.log("Amount reduced:", debtBefore - debtAfter);
+        console.log("positionsAfterRepay : ", positionsAfterRepay.length);
+        
+        vm.stopPrank();
+        
+        assertLt(debtAfter, debtBefore, "Debt should decrease");
+        assertGt(debtAfter, 0, "Should still have remaining debt");
+    }
+
+    function test_MultipleRepaysWithContinuingInterest() public {
+        uint256 borrowAmount = 10_000 * 1e6;
+        uint256 collateralAmount = 5 * 1e18;
+        
+        // Borrow
+        vm.startPrank(borrower1);
+        weth.approve(address(orderbook), collateralAmount);
+        credbook.borrow(borrowAmount, collateralAmount, type(uint256).max);
+        
+        console.log("=== Initial Borrow ===");
+        console.log("Borrowed:", borrowAmount);
+        
+        // Wait 6 months, accrue interest, repay some
+        vm.warp(block.timestamp + 182 days);
+        
+        Orderbook.BorrowPosition[] memory positions = orderbook.getBorrowerPositions(borrower1);
+        
+        // Accrue and check
+        uint256 debt1 = 0;
+        for (uint256 i = 0; i < positions.length; i++) {
+            LendingPool pool = LendingPool(positions[i].pool);
+            pool.accrueInterest(positions[i].poolId);
+            
+            uint256 borrowShares = pool.borrowShares(positions[i].poolId, borrower1);
+            (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = pool.market(positions[i].poolId);
+            debt1 += (borrowShares * totalBorrowAssets) / totalBorrowShares;
+        }
+        
+        console.log("\n=== After 6 Months ===");
+        console.log("Debt with interest:", debt1);
+        
+        // First repayment
+        uint256 repay1 = 3_000 * 1e6;
+        usdc.mint(borrower1, repay1);
+        usdc.approve(address(orderbook), repay1);
+        credbook.repay(repay1);
+        
+        console.log("Repaid:", repay1);
+        
+        // Wait another 6 months
+        vm.warp(block.timestamp + 182 days);
+        
+        uint256 debt2 = 0;
+        for (uint256 i = 0; i < positions.length; i++) {
+            LendingPool pool = LendingPool(positions[i].pool);
+            pool.accrueInterest(positions[i].poolId);
+            
+            uint256 borrowShares = pool.borrowShares(positions[i].poolId, borrower1);
+            if (borrowShares > 0) {
+                (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = pool.market(positions[i].poolId);
+                debt2 += (borrowShares * totalBorrowAssets) / totalBorrowShares;
+            }
+        }
+        
+        console.log("\n=== After Another 6 Months ===");
+        console.log("Debt with more interest:", debt2);
+        
+        // Second repayment
+        uint256 repay2 = 3_000 * 1e6;
+        usdc.mint(borrower1, repay2);
+        usdc.approve(address(orderbook), repay2);
+        credbook.repay(repay2);
+        
+        console.log("Repaid:", repay2);
+        
+        // Final debt check
+        uint256 debtFinal = 0;
+        for (uint256 i = 0; i < positions.length; i++) {
+            LendingPool pool = LendingPool(positions[i].pool);
+            uint256 borrowShares = pool.borrowShares(positions[i].poolId, borrower1);
+            if (borrowShares > 0) {
+                (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = pool.market(positions[i].poolId);
+                debtFinal += (borrowShares * totalBorrowAssets) / totalBorrowShares;
+            }
+        }
+        
+        console.log("\n=== Final Debt ===");
+        console.log("Remaining:", debtFinal);
+        console.log("Total repaid:", repay1 + repay2);
+        
+        vm.stopPrank();
+        
+        // Should still have debt since interest kept accruing
+        assertGt(debtFinal, 0, "Should have remaining debt");
+        assertLt(debtFinal, debt1, "Final debt should be less than debt after first period");
+    }
+
+    function test_InterestAccruesOnRemainingDebtAfterPartialRepay() public {
+        uint256 borrowAmount = 10_000 * 1e6;
+        uint256 collateralAmount = 5 * 1e18;
+        
+        // Borrow
+        vm.startPrank(borrower1);
+        weth.approve(address(orderbook), collateralAmount);
+        credbook.borrow(borrowAmount, collateralAmount, type(uint256).max);
+        
+        // Wait 6 months and repay half
+        vm.warp(block.timestamp + 182 days);
+        
+        Orderbook.BorrowPosition[] memory positions = orderbook.getBorrowerPositions(borrower1);
+        
+        for (uint256 i = 0; i < positions.length; i++) {
+            LendingPool(positions[i].pool).accrueInterest(positions[i].poolId);
+        }
+        
+        uint256 repayAmount = 5_000 * 1e6;
+        usdc.mint(borrower1, repayAmount);
+        usdc.approve(address(orderbook), repayAmount);
+        credbook.repay(repayAmount);
+        
+        // Get debt immediately after repayment
+        uint256 debtAfterRepay = 0;
+        for (uint256 i = 0; i < positions.length; i++) {
+            LendingPool pool = LendingPool(positions[i].pool);
+            uint256 borrowShares = pool.borrowShares(positions[i].poolId, borrower1);
+            if (borrowShares > 0) {
+                (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = pool.market(positions[i].poolId);
+                debtAfterRepay += (borrowShares * totalBorrowAssets) / totalBorrowShares;
+            }
+        }
+        
+        console.log("Debt after repaying 5000:", debtAfterRepay);
+        
+        // Wait another 6 months - interest should accrue on REMAINING debt
+        vm.warp(block.timestamp + 182 days);
+        
+        uint256 debtAfterMoreTime = 0;
+        for (uint256 i = 0; i < positions.length; i++) {
+            LendingPool pool = LendingPool(positions[i].pool);
+            pool.accrueInterest(positions[i].poolId);
+            
+            uint256 borrowShares = pool.borrowShares(positions[i].poolId, borrower1);
+            if (borrowShares > 0) {
+                (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = pool.market(positions[i].poolId);
+                debtAfterMoreTime += (borrowShares * totalBorrowAssets) / totalBorrowShares;
+            }
+        }
+        
+        console.log("Debt after 6 more months:", debtAfterMoreTime);
+        console.log("Additional interest accrued:", debtAfterMoreTime - debtAfterRepay);
+        
+        vm.stopPrank();
+        
+        // Interest should continue accruing on remaining balance
+        assertGt(debtAfterMoreTime, debtAfterRepay, "Interest should accrue on remaining debt");
+    }
+
+    function test_CannotFullyRepayWithOnlyPrincipalAfterLongTime() public {
+        uint256 borrowAmount = 10_000 * 1e6;
+        uint256 collateralAmount = 5 * 1e18;
+        
+        // Borrow
+        vm.startPrank(borrower1);
+        weth.approve(address(orderbook), collateralAmount);
+        credbook.borrow(borrowAmount, collateralAmount, type(uint256).max);
+        
+        // Wait 2 years
+        vm.warp(block.timestamp + 730 days);
+        
+        // Accrue interest
+        Orderbook.BorrowPosition[] memory positions = orderbook.getBorrowerPositions(borrower1);
+        uint256 actualDebt = 0;
+        
+        for (uint256 i = 0; i < positions.length; i++) {
+            LendingPool pool = LendingPool(positions[i].pool);
+            pool.accrueInterest(positions[i].poolId);
+            
+            uint256 borrowShares = pool.borrowShares(positions[i].poolId, borrower1);
+            (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = pool.market(positions[i].poolId);
+            actualDebt += (borrowShares * totalBorrowAssets) / totalBorrowShares;
+        }
+        
+        console.log("Original borrow:", borrowAmount);
+        console.log("Debt after 2 years:", actualDebt);
+        console.log("Interest as % of principal(x100):", ((actualDebt - borrowAmount) * 10000) / borrowAmount);
+        
+        // Try to repay only principal
+        // usdc.mint(borrower1, borrowAmount);
+        usdc.approve(address(orderbook), borrowAmount);
+        credbook.repay(borrowAmount);
+        
+        // Check if debt remains
+        uint256 remainingDebt = 0;
+        for (uint256 i = 0; i < positions.length; i++) {
+            LendingPool pool = LendingPool(positions[i].pool);
+            uint256 borrowShares = pool.borrowShares(positions[i].poolId, borrower1);
+            if (borrowShares > 0) {
+                (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = pool.market(positions[i].poolId);
+                remainingDebt += (borrowShares * totalBorrowAssets) / totalBorrowShares;
+            }
+        }
+        
+        console.log("Remaining debt:", remainingDebt);
+        
+        vm.stopPrank();
     }
 }

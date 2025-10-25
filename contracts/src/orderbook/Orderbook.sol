@@ -227,7 +227,7 @@ contract Orderbook {
             currentOrderIndex++;
         }
         
-        console.log("Remaining amount : ", remainingAmount); // 100000000000 = 100_000 * 1e6
+        // console.log("Remaining amount : ", remainingAmount); // 100000000000 = 100_000 * 1e6
         require(remainingAmount == 0, "Could not fill entire order");
         
         // Second pass: execute one borrow per pool
@@ -280,23 +280,13 @@ contract Orderbook {
         
         uint256 remainingAmount = amount;
         
-        // Repay each position proportionally or in order
+        // Repay each position based on ACTUAL debt, not tracked amount
         for (uint256 i = 0; i < positions.length && remainingAmount > 0; i++) {
             BorrowPosition storage pos = positions[i];
             
-            if (pos.amount == 0) continue; // Already fully repaid
+            if (pos.amount == 0) continue;
             
-            uint256 repayAmount = remainingAmount > pos.amount ? pos.amount : remainingAmount;
-            
-            // Execute repay on the pool
-            LendingPool pool = LendingPool(pos.pool);
-            IERC20(USDC).approve(pos.pool, repayAmount);
-            pool.repay(pos.poolId, repayAmount, 0, borrower, "");
-            
-            emit RepayExecuted(borrower, pos.pool, repayAmount);
-            
-            // Update position
-            pos.amount -= repayAmount;
+            uint256 repayAmount = _repayPosition(pos, borrower, remainingAmount);
             remainingAmount -= repayAmount;
         }
         
@@ -307,6 +297,63 @@ contract Orderbook {
         
         // Refresh orderbook after repayments
         refreshOrderbook();
+    }
+
+    /// @notice Internal function to repay a single position
+    /// @return repayAmount The actual amount repaid
+    function _repayPosition(
+        BorrowPosition storage pos,
+        address borrower,
+        uint256 maxRepayAmount
+    ) internal returns (uint256 repayAmount) {
+        LendingPool pool = LendingPool(pos.pool);
+        
+        // Get ACTUAL debt from pool (includes accrued interest)
+        uint256 borrowShares = pool.borrowShares(pos.poolId, borrower);
+        
+        if (borrowShares == 0) {
+            pos.amount = 0;
+            return 0;
+        }
+        
+        // Calculate actual debt for this position
+        uint256 actualDebt = _calculateDebtFromShares(pool, pos.poolId, borrowShares);
+        
+        // Repay up to actual debt or remaining amount
+        repayAmount = maxRepayAmount > actualDebt ? actualDebt : maxRepayAmount;
+        
+        // Execute repay on the pool
+        IERC20(USDC).approve(pos.pool, repayAmount);
+        pool.repay(pos.poolId, repayAmount, 0, borrower, "");
+        
+        emit RepayExecuted(borrower, pos.pool, repayAmount);
+        
+        // Update tracked position
+        _updatePositionAfterRepay(pos, repayAmount, actualDebt);
+    }
+
+    /// @notice Calculate debt from borrow shares
+    function _calculateDebtFromShares(
+        LendingPool pool,
+        uint256 poolId,
+        uint256 borrowShares
+    ) internal view returns (uint256) {
+        (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = pool.market(poolId);
+        return (borrowShares * uint256(totalBorrowAssets)) / totalBorrowShares;
+    }
+
+    /// @notice Update position tracking after repayment
+    function _updatePositionAfterRepay(
+        BorrowPosition storage pos,
+        uint256 repayAmount,
+        uint256 actualDebt
+    ) internal {
+        if (repayAmount >= actualDebt) {
+            pos.amount = 0;
+        } else {
+            // Proportionally reduce tracked amount
+            pos.amount -= (pos.amount * repayAmount) / actualDebt;
+        }
     }
 
 
@@ -405,5 +452,22 @@ contract Orderbook {
             irm: irm,
             lltv: lltv
         });
+    }
+
+    /// @notice Get actual debt including interest for a borrower
+    function getActualDebt(address borrower) public view returns (uint256 totalDebt) {
+        BorrowPosition[] memory positions = borrowerPositions[borrower];
+        
+        for (uint256 i = 0; i < positions.length; i++) {
+            if (positions[i].amount == 0) continue;
+            
+            LendingPool pool = LendingPool(positions[i].pool);
+            uint256 borrowShares = pool.borrowShares(positions[i].poolId, borrower);
+            
+            if (borrowShares > 0) {
+                (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = pool.market(positions[i].poolId);
+                totalDebt += (borrowShares * uint256(totalBorrowAssets)) / totalBorrowShares;
+            }
+        }
     }
 }
