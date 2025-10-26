@@ -414,6 +414,34 @@ export default function CredbookLenderDashboard() {
           </div>
 
           {/* Orderbook View */}
+          {activeTab === 'overview' && (
+            <div className="bg-slate-900/50 backdrop-blur-xl border border-slate-800 rounded-2xl p-6">
+              <h2 className="text-xl font-bold mb-6">Your Supply Breakdown</h2>
+
+              {pools.filter(p => p.yourSupply > 0).length === 0 ? (
+                <div className="text-center py-12 text-slate-400">
+                  <Activity className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                  <p>No active supplies yet</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {pools.filter(p => p.yourSupply > 0).map(pool => (
+                    <div key={pool.id} className="p-4 bg-slate-800/40 rounded-lg">
+                      <div className="flex justify-between mb-1">
+                        <span className="font-medium">{pool.name}</span>
+                        <span>{pool.yourSupply.toFixed(2)} USDC</span>
+                      </div>
+                      <div className="flex justify-between text-sm text-cyan-400">
+                        <span>APY</span>
+                        <span>~{pool.currentRate.toFixed(2)}%</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {activeTab === 'orderbook' && (
             <div className="bg-slate-900/50 backdrop-blur-xl border border-slate-800 rounded-2xl p-6">
               <div className="flex items-center justify-between mb-6">
@@ -543,6 +571,7 @@ export default function CredbookLenderDashboard() {
                       <span className="text-slate-400 text-sm">Utilization</span>
                       <div className="flex items-center gap-2">
                         <div className="w-24 h-2 bg-slate-800 rounded-full overflow-hidden">
+                            
                           <div
                             className="h-full bg-gradient-to-r from-emerald-400 to-cyan-400"
                             style={{ width: `${Math.min(100, pool.utilization)}%` }}
@@ -551,6 +580,8 @@ export default function CredbookLenderDashboard() {
                         <span className="text-sm font-medium">{pool.utilization.toFixed(1)}%</span>
                       </div>
                     </div>
+
+                    
 
                     <div className="flex justify-between items-center pt-2 border-t border-slate-800">
                       <span className="text-slate-400 text-sm">Your Supply</span>
@@ -568,6 +599,8 @@ export default function CredbookLenderDashboard() {
                       </div>
                     )}
                   </div>
+
+                  
 
                   {selectedPool === pool.id && (
                     <div className="space-y-4 pt-4 border-t border-slate-800">
@@ -628,6 +661,8 @@ export default function CredbookLenderDashboard() {
                 </div>
               ))}
             </div>
+
+            
           )}
 
           {/* Overview Tab */}

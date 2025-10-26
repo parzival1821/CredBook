@@ -27,7 +27,7 @@ export default function Home() {
             CredBook
           </h1>
           <p className="mb-8 text-xl text-gray-200 md:text-2xl">
-            A description of the project here.
+            On-chain orderbook for DeFi lending - matching borrowers with the best rates across competing liquidity pools.
           </p>
           <div className="flex flex-col gap-4 sm:flex-row sm:justify-center">
             <button className="rounded-lg bg-white/20 px-8 py-4 text-lg font-medium text-white backdrop-blur-sm transition-all hover:bg-white/30 hover:scale-105">
