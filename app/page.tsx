@@ -44,9 +44,6 @@ export default function Home() {
             >
               Get Started
             </button>
-            <button className="rounded-lg border-2 border-white/40 px-8 py-4 text-lg font-medium text-white backdrop-blur-sm transition-all hover:bg-white/10 hover:scale-105">
-              Learn More
-            </button>
           </div>
         </div>
       </div>
