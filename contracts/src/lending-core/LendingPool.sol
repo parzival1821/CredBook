@@ -289,7 +289,7 @@ contract LendingPool{
         if(marketParams.oracle == address(1)){
             collateralPrice = 4000 * 1e24;
         } else {
-            collateralPrice = IOracle(marketParams.oracle).price();
+            collateralPrice = IOracle(marketParams.oracle).price()/1e12; // note the manual 12 decimal downscaling. because was having issues changing oracle contract to work with 24 decimals directly
         }
 
         return _isHealthy(marketParams, id, borrower, collateralPrice);
