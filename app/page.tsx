@@ -1,7 +1,15 @@
 'use client';
+
+import { useRouter } from 'next/navigation';
 import LiquidEther from '@/components/LiquidEther';
 
 export default function Home() {
+  const router = useRouter();
+
+  const handleGetStarted = () => {
+    router.push('/borrower'); // Navigate to /borrower
+  };
+
   return (
     <div className="relative min-h-screen w-full overflow-hidden bg-black">
       {/* LiquidEther Background */}
@@ -30,7 +38,10 @@ export default function Home() {
             On-chain orderbook for DeFi lending - matching borrowers with the best rates across competing liquidity pools.
           </p>
           <div className="flex flex-col gap-4 sm:flex-row sm:justify-center">
-            <button className="rounded-lg bg-white/20 px-8 py-4 text-lg font-medium text-white backdrop-blur-sm transition-all hover:bg-white/30 hover:scale-105">
+            <button
+              onClick={handleGetStarted}
+              className="rounded-lg bg-white/20 px-8 py-4 text-lg font-medium text-white backdrop-blur-sm transition-all hover:bg-white/30 hover:scale-105"
+            >
               Get Started
             </button>
             <button className="rounded-lg border-2 border-white/40 px-8 py-4 text-lg font-medium text-white backdrop-blur-sm transition-all hover:bg-white/10 hover:scale-105">
