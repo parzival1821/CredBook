@@ -7,5 +7,6 @@ contracts/node_modules
 
 backend/node_modules/
 backend/pyth/.env
+backend/pyth/node_modules
 
 .env
