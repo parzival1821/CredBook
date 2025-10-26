@@ -1,5 +1,6 @@
 📌CredBook
-⚡ Overview:
+
+Overview:
 This project introduces an on-chain orderbook-based lending platform where multiple isolated lending pools compete to provide the best available interest rates to borrowers — powered by efficient rate sorting and real-time price oracles.
 
 🧱 Tech Stack
