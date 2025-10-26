@@ -221,12 +221,6 @@ export default function BorrowerDashboard() {
       const availableOrders = await orderbookContract.getAllOrders();
       console.log('Available orders:', availableOrders.length);
       
-      if (availableOrders.length === 0) {
-        alert('No liquidity available. Please ask lenders to supply liquidity to pools first.');
-        setTxStatus(null);
-        setIsLoading(false);
-        return;
-      }
       
       // Check if first order rate is within max
       const firstOrderRate = availableOrders[0].rate;
