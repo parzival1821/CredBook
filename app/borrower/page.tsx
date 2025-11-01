@@ -1,8 +1,8 @@
 'use client'
 import React, { useState, useEffect } from 'react';
-import { Search, ChevronDown, Wallet, TrendingUp, Shield, Clock, AlertCircle, RefreshCw } from 'lucide-react';
+import { Search, ChevronDown, Wallet, TrendingUp, Shield, Clock, AlertCircle, RefreshCw, Info } from 'lucide-react';
 
-// Contract ABIs (minimal - only functions we need)
+// Contract ABIs
 const ORDERBOOK_ABI = [
   "function matchBorrowOrder(address borrower, uint256 amount, uint256 maxRate, uint256 collateralAmount) external",
   "function fulfillRepay(address borrower, uint256 amount) external",
@@ -15,11 +15,9 @@ const ORDERBOOK_ABI = [
 const ERC20_ABI = [
   "function approve(address spender, uint256 amount) external returns (bool)",
   "function allowance(address owner, address spender) external view returns (uint256)",
-  "function balanceOf(address account) external view returns (uint256)"
-];
-
-const POOL_ABI = [
-  "function market(uint256) external view returns (uint128 totalSupplyAssets, uint128 totalSupplyShares, uint128 totalBorrowAssets, uint128 totalBorrowShares, uint128 lastUpdate, uint128 fee)"
+  "function balanceOf(address account) external view returns (uint256)",
+  "function symbol() external view returns (string)",
+  "function decimals() external view returns (uint8)"
 ];
 
 // Contract addresses on Sepolia
@@ -35,6 +33,43 @@ const ADDRESSES = {
   ]
 };
 
+const COLLATERAL_TOKENS = [
+  { symbol: 'WETH', name: 'Wrapped Ether', address: ADDRESSES.weth, decimals: 18, isDefault: true },
+  { symbol: 'USDC', name: 'USD Coin', address: ADDRESSES.usdc, decimals: 18, isDefault: true },
+  { symbol: 'WBTC', name: 'Wrapped Bitcoin', address: ADDRESSES.weth, decimals: 8, isDefault: false },
+  { symbol: 'stETH', name: 'Lido Staked ETH', address: ADDRESSES.weth, decimals: 18, isDefault: false },
+  { symbol: 'wstETH', name: 'Wrapped Staked ETH', address: ADDRESSES.weth, decimals: 18, isDefault: false },
+  { symbol: 'rETH', name: 'Rocket Pool ETH', address: ADDRESSES.weth, decimals: 18, isDefault: false },
+  { symbol: 'cbETH', name: 'Coinbase Wrapped Staked ETH', address: ADDRESSES.weth, decimals: 18, isDefault: false },
+  { symbol: 'MATIC', name: 'Polygon', address: ADDRESSES.weth, decimals: 18, isDefault: false },
+  { symbol: 'LINK', name: 'Chainlink', address: ADDRESSES.weth, decimals: 18, isDefault: false },
+  { symbol: 'UNI', name: 'Uniswap', address: ADDRESSES.weth, decimals: 18, isDefault: false },
+  { symbol: 'AAVE', name: 'Aave', address: ADDRESSES.weth, decimals: 18, isDefault: false },
+  { symbol: 'MKR', name: 'Maker', address: ADDRESSES.weth, decimals: 18, isDefault: false },
+  { symbol: 'LDO', name: 'Lido DAO', address: ADDRESSES.weth, decimals: 18, isDefault: false },
+  { symbol: 'CRV', name: 'Curve DAO', address: ADDRESSES.weth, decimals: 18, isDefault: false },
+  { symbol: 'SNX', name: 'Synthetix', address: ADDRESSES.weth, decimals: 18, isDefault: false },
+  { symbol: 'COMP', name: 'Compound', address: ADDRESSES.weth, decimals: 18, isDefault: false }
+];
+
+const LOAN_TOKENS = [
+  { symbol: 'USDC', name: 'USD Coin', address: ADDRESSES.usdc, decimals: 6, isDefault: true },
+  { symbol: 'USDT', name: 'Tether USD', address: ADDRESSES.usdc, decimals: 6, isDefault: false },
+  { symbol: 'DAI', name: 'Dai Stablecoin', address: ADDRESSES.usdc, decimals: 18, isDefault: false },
+  { symbol: 'FRAX', name: 'Frax', address: ADDRESSES.usdc, decimals: 18, isDefault: false },
+  { symbol: 'LUSD', name: 'Liquity USD', address: ADDRESSES.usdc, decimals: 18, isDefault: false },
+  { symbol: 'sUSD', name: 'Synth sUSD', address: ADDRESSES.usdc, decimals: 18, isDefault: false },
+  { symbol: 'TUSD', name: 'TrueUSD', address: ADDRESSES.usdc, decimals: 18, isDefault: false },
+  { symbol: 'USDP', name: 'Pax Dollar', address: ADDRESSES.usdc, decimals: 18, isDefault: false },
+  { symbol: 'GUSD', name: 'Gemini Dollar', address: ADDRESSES.usdc, decimals: 2, isDefault: false },
+  { symbol: 'BUSD', name: 'Binance USD', address: ADDRESSES.usdc, decimals: 18, isDefault: false },
+  { symbol: 'crvUSD', name: 'Curve USD', address: ADDRESSES.usdc, decimals: 18, isDefault: false },
+  { symbol: 'PYUSD', name: 'PayPal USD', address: ADDRESSES.usdc, decimals: 6, isDefault: false },
+  { symbol: 'GHO', name: 'Aave GHO', address: ADDRESSES.usdc, decimals: 18, isDefault: false },
+  { symbol: 'mkUSD', name: 'Prisma mkUSD', address: ADDRESSES.usdc, decimals: 18, isDefault: false },
+  { symbol: 'USDD', name: 'Decentralized USD', address: ADDRESSES.usdc, decimals: 18, isDefault: false }
+];
+
 export default function BorrowerDashboard() {
   // Wallet state
   const [account, setAccount] = useState<string | null>(null);
@@ -42,19 +77,21 @@ export default function BorrowerDashboard() {
   const [provider, setProvider] = useState<any>(null);
   const [signer, setSigner] = useState<any>(null);
 
+  // Token selection
+  const [selectedCollateralToken, setSelectedCollateralToken] = useState(COLLATERAL_TOKENS[0]);
+  const [selectedLoanToken, setSelectedLoanToken] = useState(LOAN_TOKENS[0]);
+
   // UI state
-  const [selectedCollateral, setSelectedCollateral] = useState('WETH');
   const [orderType, setOrderType] = useState<'market' | 'limit'>('market');
   const [collateralAmount, setCollateralAmount] = useState('');
   const [borrowAmount, setBorrowAmount] = useState('');
   const [limitRate, setLimitRate] = useState('');
-  const [selectedPool, setSelectedPool] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [txStatus, setTxStatus] = useState<string | null>(null);
 
   // Data state
-  const [wethBalance, setWethBalance] = useState('0');
-  const [usdcBalance, setUsdcBalance] = useState('0');
+  const [collateralBalance, setCollateralBalance] = useState('0');
+  const [loanBalance, setLoanBalance] = useState('0');
   const [orders, setOrders] = useState<any[]>([]);
   const [positions, setPositions] = useState<any[]>([]);
   const [totalBorrowed, setTotalBorrowed] = useState('0');
@@ -70,14 +107,12 @@ export default function BorrowerDashboard() {
 
     setIsConnecting(true);
     try {
-      // Request account access
       const accounts = await window.ethereum.request({ 
         method: 'eth_requestAccounts' 
       });
       
-      // Check if on Sepolia
       const chainId = await window.ethereum.request({ method: 'eth_chainId' });
-      if (chainId !== '0xaa36a7') { // Sepolia chainId
+      if (chainId !== '0xaa36a7') {
         try {
           await window.ethereum.request({
             method: 'wallet_switchEthereumChain',
@@ -99,7 +134,6 @@ export default function BorrowerDashboard() {
       setProvider(web3Provider);
       setSigner(web3Signer);
       
-      // Load initial data
       await loadData(accounts[0], web3Provider, web3Signer);
     } catch (error) {
       console.error('Error connecting wallet:', error);
@@ -115,14 +149,14 @@ export default function BorrowerDashboard() {
       const ethers = (window as any).ethers;
       
       // Load balances
-      const wethContract = new ethers.Contract(ADDRESSES.weth, ERC20_ABI, web3Provider);
-      const usdcContract = new ethers.Contract(ADDRESSES.usdc, ERC20_ABI, web3Provider);
+      const collateralContract = new ethers.Contract(selectedCollateralToken.address, ERC20_ABI, web3Provider);
+      const loanContract = new ethers.Contract(selectedLoanToken.address, ERC20_ABI, web3Provider);
       
-      const wethBal = await wethContract.balanceOf(userAddress);
-      const usdcBal = await usdcContract.balanceOf(userAddress);
+      const collateralBal = await collateralContract.balanceOf(userAddress);
+      const loanBal = await loanContract.balanceOf(userAddress);
       
-      setWethBalance(ethers.formatEther(wethBal));
-      setUsdcBalance(ethers.formatUnits(usdcBal, 6));
+      setCollateralBalance(ethers.formatUnits(collateralBal, selectedCollateralToken.decimals));
+      setLoanBalance(ethers.formatUnits(loanBal, selectedLoanToken.decimals));
       
       // Load orderbook data
       const orderbookContract = new ethers.Contract(ADDRESSES.orderbook, ORDERBOOK_ABI, web3Provider);
@@ -133,11 +167,10 @@ export default function BorrowerDashboard() {
       
       setOrders(allOrders);
       setPositions(userPositions);
-      setActualDebt(ethers.formatUnits(debt, 6));
+      setActualDebt(ethers.formatUnits(debt, selectedLoanToken.decimals));
       
-      // Calculate total borrowed from positions
       const total = userPositions.reduce((sum: bigint, pos: any) => sum + pos.amount, 0n);
-      setTotalBorrowed(ethers.formatUnits(total, 6));
+      setTotalBorrowed(ethers.formatUnits(total, selectedLoanToken.decimals));
       
     } catch (error) {
       console.error('Error loading data:', error);
@@ -156,7 +189,6 @@ export default function BorrowerDashboard() {
       const tx = await orderbookContract.refreshOrderbook();
       await tx.wait();
       
-      // Reload data
       await loadData(account!, provider, signer);
       setTxStatus('Orderbook refreshed successfully');
       setTimeout(() => setTxStatus(null), 3000);
@@ -181,50 +213,44 @@ export default function BorrowerDashboard() {
     try {
       const ethers = (window as any).ethers;
       const orderbookContract = new ethers.Contract(ADDRESSES.orderbook, ORDERBOOK_ABI, signer);
-      const wethContract = new ethers.Contract(ADDRESSES.weth, ERC20_ABI, signer);
+      const collateralContract = new ethers.Contract(selectedCollateralToken.address, ERC20_ABI, signer);
       
-      // Parse amounts
-      const collateralWei = ethers.parseEther(collateralAmount);
-      const borrowWei = ethers.parseUnits(borrowAmount, 6);
+      const collateralWei = ethers.parseUnits(collateralAmount, selectedCollateralToken.decimals);
+      const borrowWei = ethers.parseUnits(borrowAmount, selectedLoanToken.decimals);
       
-      console.log('Collateral (WETH):', collateralAmount, 'Wei:', collateralWei.toString());
-      console.log('Borrow (USDC):', borrowAmount, 'Wei:', borrowWei.toString());
+      // Check balance
+      setTxStatus(`Checking ${selectedCollateralToken.symbol} balance...`);
+      const balance = await collateralContract.balanceOf(account);
       
-      // Check WETH balance
-      setTxStatus('Checking WETH balance...');
-      const wethBal = await wethContract.balanceOf(account);
-      console.log('WETH Balance:', ethers.formatEther(wethBal));
-      
-      if (wethBal < collateralWei) {
-        alert(`Insufficient WETH balance. You have ${ethers.formatEther(wethBal)} WETH but need ${collateralAmount} WETH`);
+      if (balance < collateralWei) {
+        alert(`Insufficient ${selectedCollateralToken.symbol} balance. You have ${ethers.formatUnits(balance, selectedCollateralToken.decimals)} but need ${collateralAmount}`);
         setTxStatus(null);
         setIsLoading(false);
         return;
       }
       
-      // Calculate max rate (convert % to per-second WAD)
+      // Calculate max rate
       let maxRateWad;
       if (orderType === 'limit' && limitRate) {
-        // Convert annual % to per-second rate in WAD
         const annualRate = parseFloat(limitRate) / 100;
         const perSecondRate = annualRate / (365.25 * 24 * 60 * 60);
         maxRateWad = ethers.parseUnits(perSecondRate.toFixed(18), 18);
       } else {
-        // Market order - accept very high rate (1000% APR as max)
-        maxRateWad = ethers.parseUnits('0.0000003170979', 18); // ~1000% APR
+        maxRateWad = ethers.parseUnits('0.0000003170979', 18);
       }
       
-      console.log('Max Rate (WAD):', maxRateWad.toString());
-      
-      // Check if orderbook has orders
+      // Check available orders
       setTxStatus('Checking available orders...');
       const availableOrders = await orderbookContract.getAllOrders();
-      console.log('Available orders:', availableOrders.length);
       
+      if (availableOrders.length === 0) {
+        alert('No orders available in the orderbook');
+        setTxStatus(null);
+        setIsLoading(false);
+        return;
+      }
       
-      // Check if first order rate is within max
       const firstOrderRate = availableOrders[0].rate;
-      console.log('Best available rate:', firstOrderRate.toString());
       
       if (firstOrderRate > maxRateWad) {
         const firstRateAPR = formatRate(firstOrderRate);
@@ -235,43 +261,34 @@ export default function BorrowerDashboard() {
         return;
       }
       
-      // Calculate total available liquidity
       let totalLiquidity = 0n;
       for (const order of availableOrders) {
         if (order.rate <= maxRateWad) {
           totalLiquidity += order.amount;
         }
       }
-      console.log('Total available liquidity:', ethers.formatUnits(totalLiquidity, 6), 'USDC');
       
       if (totalLiquidity < borrowWei) {
-        alert(`Insufficient liquidity. Available: ${ethers.formatUnits(totalLiquidity, 6)} USDC, Requested: ${borrowAmount} USDC`);
+        alert(`Insufficient liquidity. Available: ${ethers.formatUnits(totalLiquidity, selectedLoanToken.decimals)} ${selectedLoanToken.symbol}, Requested: ${borrowAmount} ${selectedLoanToken.symbol}`);
         setTxStatus(null);
         setIsLoading(false);
         return;
       }
       
       // Check allowance
-      setTxStatus('Checking WETH allowance...');
-      const allowance = await wethContract.allowance(account, ADDRESSES.orderbook);
-      console.log('Current allowance:', ethers.formatEther(allowance));
+      setTxStatus(`Checking ${selectedCollateralToken.symbol} allowance...`);
+      const allowance = await collateralContract.allowance(account, ADDRESSES.orderbook);
       
       if (allowance < collateralWei) {
-        setTxStatus('Approving WETH... (confirm in wallet)');
-        const approveTx = await wethContract.approve(ADDRESSES.orderbook, ethers.MaxUint256);
+        setTxStatus(`Approving ${selectedCollateralToken.symbol}... (confirm in wallet)`);
+        const approveTx = await collateralContract.approve(ADDRESSES.orderbook, ethers.MaxUint256);
         setTxStatus('Waiting for approval confirmation...');
         await approveTx.wait();
-        setTxStatus('WETH approved!');
+        setTxStatus(`${selectedCollateralToken.symbol} approved!`);
       }
       
       // Execute borrow
       setTxStatus('Creating borrow order... (confirm in wallet)');
-      console.log('Calling matchBorrowOrder with:', {
-        borrower: account,
-        amount: borrowWei.toString(),
-        maxRate: maxRateWad.toString(),
-        collateral: collateralWei.toString()
-      });
       
       const tx = await orderbookContract.matchBorrowOrder(
         account,
@@ -281,15 +298,12 @@ export default function BorrowerDashboard() {
       );
       
       setTxStatus('Waiting for confirmation...');
-      const receipt = await tx.wait();
-      console.log('Transaction receipt:', receipt);
+      await tx.wait();
       
       setTxStatus('Success! Order created ✓');
       
-      // Reload data
       await loadData(account, provider, signer);
       
-      // Clear form
       setCollateralAmount('');
       setBorrowAmount('');
       setLimitRate('');
@@ -298,26 +312,14 @@ export default function BorrowerDashboard() {
     } catch (error: any) {
       console.error('Error creating order:', error);
       
-      // Parse error message
       let errorMsg = 'Transaction failed';
       
       if (error.message?.includes('user rejected')) {
         errorMsg = 'Transaction rejected by user';
       } else if (error.reason) {
         errorMsg = error.reason;
-      } else if (error.data?.message) {
-        errorMsg = error.data.message;
       } else if (error.message) {
         errorMsg = error.message;
-      }
-      
-      // Check for common contract errors
-      if (errorMsg.includes('No orders within max rate')) {
-        errorMsg = 'No orders available at your requested rate. Try increasing your max rate or use a market order.';
-      } else if (errorMsg.includes('Could not fill entire order')) {
-        errorMsg = 'Insufficient liquidity to fill your order. Try borrowing a smaller amount.';
-      } else if (errorMsg.includes('Amount must be > 0')) {
-        errorMsg = 'Borrow amount must be greater than 0';
       }
       
       alert(`Failed to create order: ${errorMsg}`);
@@ -334,7 +336,7 @@ export default function BorrowerDashboard() {
       return;
     }
 
-    const repayAmount = prompt('Enter amount to repay (USDC):');
+    const repayAmount = prompt(`Enter amount to repay (${selectedLoanToken.symbol}):`);
     if (!repayAmount) return;
 
     setIsLoading(true);
@@ -343,17 +345,17 @@ export default function BorrowerDashboard() {
     try {
       const ethers = (window as any).ethers;
       const orderbookContract = new ethers.Contract(ADDRESSES.orderbook, ORDERBOOK_ABI, signer);
-      const usdcContract = new ethers.Contract(ADDRESSES.usdc, ERC20_ABI, signer);
+      const loanContract = new ethers.Contract(selectedLoanToken.address, ERC20_ABI, signer);
       
-      const repayWei = ethers.parseUnits(repayAmount, 6);
+      const repayWei = ethers.parseUnits(repayAmount, selectedLoanToken.decimals);
       
       // Check allowance
-      setTxStatus('Checking USDC allowance...');
-      const allowance = await usdcContract.allowance(account, ADDRESSES.orderbook);
+      setTxStatus(`Checking ${selectedLoanToken.symbol} allowance...`);
+      const allowance = await loanContract.allowance(account, ADDRESSES.orderbook);
       
       if (allowance < repayWei) {
-        setTxStatus('Approving USDC...');
-        const approveTx = await usdcContract.approve(ADDRESSES.orderbook, ethers.MaxUint256);
+        setTxStatus(`Approving ${selectedLoanToken.symbol}...`);
+        const approveTx = await loanContract.approve(ADDRESSES.orderbook, ethers.MaxUint256);
         await approveTx.wait();
       }
       
@@ -364,9 +366,8 @@ export default function BorrowerDashboard() {
       setTxStatus('Waiting for confirmation...');
       await tx.wait();
       
-      setTxStatus('Success! Debt repaid');
+      setTxStatus('Success! Debt repaid ✓');
       
-      // Reload data
       await loadData(account, provider, signer);
       
       setTimeout(() => setTxStatus(null), 5000);
@@ -389,6 +390,13 @@ export default function BorrowerDashboard() {
     return apr.toFixed(2);
   };
 
+  // Reload data when tokens change
+  useEffect(() => {
+    if (account && provider && signer) {
+      loadData(account, provider, signer);
+    }
+  }, [selectedCollateralToken, selectedLoanToken]);
+
   // Auto-refresh data every 30 seconds
   useEffect(() => {
     if (account && provider && signer) {
@@ -410,8 +418,6 @@ export default function BorrowerDashboard() {
     };
   }, []);
 
-  const collateralOptions = ['WETH'];
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900">
       {/* Navigation */}
@@ -424,7 +430,7 @@ export default function BorrowerDashboard() {
                 <span className="text-xl font-bold text-white">CredBook</span>
               </div>
               <div className="hidden md:flex items-center gap-1">
-                {['Dashboard', 'Earn', 'Borrow', 'Explore', 'Migrate'].map((item) => (
+                {['Dashboard', 'Earn', 'Borrow', 'Explore'].map((item) => (
                   <button
                     key={item}
                     className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
@@ -481,6 +487,32 @@ export default function BorrowerDashboard() {
 
       {/* Main Content */}
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+        {/* Market Info Header */}
+        <div className="mb-6 rounded-xl bg-white/5 p-6 backdrop-blur-sm border border-white/10">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <div className="flex items-center -space-x-2">
+                <div className="h-12 w-12 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 border-2 border-slate-900 flex items-center justify-center text-white font-bold">
+                  {selectedCollateralToken.symbol.slice(0, 2)}
+                </div>
+                <div className="h-12 w-12 rounded-full bg-gradient-to-br from-green-400 to-green-600 border-2 border-slate-900 flex items-center justify-center text-white font-bold">
+                  {selectedLoanToken.symbol.slice(0, 2)}
+                </div>
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold text-white">{selectedCollateralToken.symbol} / {selectedLoanToken.symbol}</h1>
+                <p className="text-sm text-gray-400">Collateral / Loan Asset</p>
+              </div>
+            </div>
+            <div className="text-right">
+              <p className="text-sm text-gray-400">Best Rate</p>
+              <p className="text-2xl font-bold text-green-400">
+                {orders.length > 0 ? `${formatRate(orders[0].rate)}%` : 'N/A'}
+              </p>
+            </div>
+          </div>
+        </div>
+
         {/* Stats */}
         <div className="mb-8 grid grid-cols-1 gap-4 md:grid-cols-4">
           <div className="rounded-xl bg-white/5 p-6 backdrop-blur-sm border border-white/10">
@@ -488,30 +520,30 @@ export default function BorrowerDashboard() {
               <div className="rounded-lg bg-blue-500/20 p-2">
                 <TrendingUp className="h-5 w-5 text-blue-400" />
               </div>
-              <span className="text-sm text-gray-400">Actual Debt</span>
+              <span className="text-sm text-gray-400">Total Debt</span>
             </div>
-            <p className="text-3xl font-bold text-white">${parseFloat(actualDebt).toFixed(2)}</p>
-            <p className="text-sm text-gray-500 mt-1">Principal: ${parseFloat(totalBorrowed).toFixed(2)}</p>
+            <p className="text-3xl font-bold text-white">{parseFloat(actualDebt).toFixed(4)}</p>
+            <p className="text-sm text-gray-500 mt-1">{selectedLoanToken.symbol}</p>
           </div>
           <div className="rounded-xl bg-white/5 p-6 backdrop-blur-sm border border-white/10">
             <div className="flex items-center gap-3 mb-2">
               <div className="rounded-lg bg-purple-500/20 p-2">
                 <Shield className="h-5 w-5 text-purple-400" />
               </div>
-              <span className="text-sm text-gray-400">WETH Balance</span>
+              <span className="text-sm text-gray-400">Collateral Balance</span>
             </div>
-            <p className="text-3xl font-bold text-white">{parseFloat(wethBalance).toFixed(4)}</p>
-            <p className="text-sm text-gray-500 mt-1">Available collateral</p>
+            <p className="text-3xl font-bold text-white">{parseFloat(collateralBalance).toFixed(4)}</p>
+            <p className="text-sm text-gray-500 mt-1">{selectedCollateralToken.symbol}</p>
           </div>
           <div className="rounded-xl bg-white/5 p-6 backdrop-blur-sm border border-white/10">
             <div className="flex items-center gap-3 mb-2">
               <div className="rounded-lg bg-green-500/20 p-2">
                 <Clock className="h-5 w-5 text-green-400" />
               </div>
-              <span className="text-sm text-gray-400">USDC Balance</span>
+              <span className="text-sm text-gray-400">Loan Balance</span>
             </div>
-            <p className="text-3xl font-bold text-white">${parseFloat(usdcBalance).toFixed(2)}</p>
-            <p className="text-sm text-gray-500 mt-1">For repayment</p>
+            <p className="text-3xl font-bold text-white">{parseFloat(loanBalance).toFixed(4)}</p>
+            <p className="text-sm text-gray-500 mt-1">{selectedLoanToken.symbol}</p>
           </div>
           <div className="rounded-xl bg-white/5 p-6 backdrop-blur-sm border border-white/10">
             <div className="flex items-center gap-3 mb-2">
@@ -566,18 +598,24 @@ export default function BorrowerDashboard() {
                 </div>
               </div>
 
-              {/* Collateral Type */}
+              {/* Collateral Token Selection */}
               <div className="mb-4">
-                <label className="mb-2 block text-sm font-medium text-gray-300">Collateral Type</label>
+                <label className="mb-2 block text-sm font-medium text-gray-300">
+                  Collateral Asset
+                  <span className="ml-2 text-xs text-gray-500">(Using {selectedCollateralToken.symbol} behind the scenes)</span>
+                </label>
                 <div className="relative">
                   <select
-                    value={selectedCollateral}
-                    onChange={(e) => setSelectedCollateral(e.target.value)}
+                    value={selectedCollateralToken.symbol}
+                    onChange={(e) => {
+                      const token = COLLATERAL_TOKENS.find(t => t.symbol === e.target.value);
+                      if (token) setSelectedCollateralToken(token);
+                    }}
                     className="w-full appearance-none rounded-lg bg-white/5 border border-white/10 px-4 py-3 pr-10 text-white focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                   >
-                    {collateralOptions.map((option) => (
-                      <option key={option} value={option} className="bg-slate-800">
-                        {option}
+                    {COLLATERAL_TOKENS.map((token) => (
+                      <option key={token.symbol} value={token.symbol} className="bg-slate-800">
+                        {token.symbol} - {token.name}
                       </option>
                     ))}
                   </select>
@@ -598,15 +636,40 @@ export default function BorrowerDashboard() {
                     className="w-full rounded-lg bg-white/5 border border-white/10 px-4 py-3 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                   />
                   <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-gray-400">
-                    {selectedCollateral}
+                    {selectedCollateralToken.symbol}
                   </span>
                 </div>
-                <p className="mt-1 text-xs text-gray-500">Balance: {parseFloat(wethBalance).toFixed(4)} WETH</p>
+                <p className="mt-1 text-xs text-gray-500">Balance: {parseFloat(collateralBalance).toFixed(4)} {selectedCollateralToken.symbol}</p>
+              </div>
+
+              {/* Loan Token Selection */}
+              <div className="mb-4">
+                <label className="mb-2 block text-sm font-medium text-gray-300">
+                  Loan Asset
+                  <span className="ml-2 text-xs text-gray-500">(Using {selectedLoanToken.symbol} behind the scenes)</span>
+                </label>
+                <div className="relative">
+                  <select
+                    value={selectedLoanToken.symbol}
+                    onChange={(e) => {
+                      const token = LOAN_TOKENS.find(t => t.symbol === e.target.value);
+                      if (token) setSelectedLoanToken(token);
+                    }}
+                    className="w-full appearance-none rounded-lg bg-white/5 border border-white/10 px-4 py-3 pr-10 text-white focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                  >
+                    {LOAN_TOKENS.map((token) => (
+                      <option key={token.symbol} value={token.symbol} className="bg-slate-800">
+                        {token.symbol} - {token.name}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="absolute right-3 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                </div>
               </div>
 
               {/* Borrow Amount */}
               <div className="mb-4">
-                <label className="mb-2 block text-sm font-medium text-gray-300">Borrow Amount (USDC)</label>
+                <label className="mb-2 block text-sm font-medium text-gray-300">Borrow Amount</label>
                 <input
                   type="number"
                   value={borrowAmount}
@@ -615,6 +678,7 @@ export default function BorrowerDashboard() {
                   step="0.01"
                   className="w-full rounded-lg bg-white/5 border border-white/10 px-4 py-3 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                 />
+                <p className="mt-1 text-xs text-gray-500">Available: {parseFloat(loanBalance).toFixed(4)} {selectedLoanToken.symbol}</p>
               </div>
 
               {/* Limit Rate (only for limit orders) */}
@@ -632,13 +696,21 @@ export default function BorrowerDashboard() {
                 </div>
               )}
 
+              {/* Info Box */}
+              <div className="mb-6 rounded-lg bg-blue-500/10 border border-blue-500/30 p-3 flex gap-2">
+                <Info className="h-4 w-4 text-blue-400 flex-shrink-0 mt-0.5" />
+                <p className="text-xs text-blue-200">
+                  Note: All transactions use Mock WETH as collateral and Mock USDC as loan token on Sepolia testnet.
+                </p>
+              </div>
+
               {/* Create Order Button */}
               <button
                 onClick={handleCreateOrder}
                 disabled={isLoading || !account}
                 className="w-full rounded-lg bg-gradient-to-r from-blue-600 to-blue-700 py-3 font-medium text-white hover:from-blue-700 hover:to-blue-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
               >
-                {isLoading ? 'Processing...' : !account ? 'Connect Wallet First' : 'Create Order'}
+                {isLoading ? 'Processing...' : !account ? 'Connect Wallet First' : 'Create Borrow Order'}
               </button>
 
               <p className="mt-3 text-center text-xs text-gray-400">
@@ -688,7 +760,7 @@ export default function BorrowerDashboard() {
                         <div>
                           <p className="text-xs text-gray-500">Liquidity</p>
                           <p className="text-sm font-medium text-white">
-                            ${(Number(order.amount) / 1e6).toFixed(2)}
+                            {(Number(order.amount) / Math.pow(10, selectedLoanToken.decimals)).toFixed(2)} {selectedLoanToken.symbol}
                           </p>
                         </div>
                         <div>
@@ -714,7 +786,7 @@ export default function BorrowerDashboard() {
               
               <div className="space-y-3">
                 {positions.map((pos, idx) => {
-                  const borrowedUSDC = Number(pos.amount) / 1e6;
+                  const borrowedAmount = Number(pos.amount) / Math.pow(10, selectedLoanToken.decimals);
                   const timestamp = new Date(Number(pos.timestamp) * 1000);
                   
                   return (
@@ -733,7 +805,7 @@ export default function BorrowerDashboard() {
                           </div>
                         </div>
                         <div className="text-right">
-                          <p className="text-lg font-bold text-orange-400">${borrowedUSDC.toFixed(2)}</p>
+                          <p className="text-lg font-bold text-orange-400">{borrowedAmount.toFixed(4)} {selectedLoanToken.symbol}</p>
                           <p className="text-xs text-gray-500">Borrowed</p>
                         </div>
                       </div>
@@ -752,16 +824,16 @@ export default function BorrowerDashboard() {
                   <AlertCircle className="h-5 w-5 text-orange-400 flex-shrink-0 mt-0.5" />
                   <div className="flex-1">
                     <p className="text-sm font-medium text-orange-200">
-                      Total Debt Including Interest: ${parseFloat(actualDebt).toFixed(2)}
+                      Total Debt Including Interest: {parseFloat(actualDebt).toFixed(4)} {selectedLoanToken.symbol}
                     </p>
                     <p className="text-xs text-orange-300/70 mt-1">
-                      Principal: ${parseFloat(totalBorrowed).toFixed(2)} | 
-                      Interest Accrued: ${(parseFloat(actualDebt) - parseFloat(totalBorrowed)).toFixed(2)}
+                      Principal: {parseFloat(totalBorrowed).toFixed(4)} {selectedLoanToken.symbol} | 
+                      Interest Accrued: {(parseFloat(actualDebt) - parseFloat(totalBorrowed)).toFixed(4)} {selectedLoanToken.symbol}
                     </p>
                     <button
                       onClick={handleRepay}
                       disabled={isLoading}
-                      className="mt-3 rounded-lg bg-orange-500 px-4 py-2 text-sm font-medium text-white hover:bg-orange-600 disabled:opacity-50"
+                      className="mt-3 rounded-lg bg-orange-500 px-4 py-2 text-sm font-medium text-white hover:bg-orange-600 disabled:opacity-50 transition-colors"
                     >
                       Repay Debt
                     </button>
